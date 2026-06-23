@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1"/>
+<meta name="theme-color" content="#8e1b1b"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<link rel="manifest" href="./manifest.webmanifest"/>
+<link rel="apple-touch-icon" href="./icon.svg"/>
+<link rel="icon" href="./icon.svg"/>
+<link rel="stylesheet" href="./app.css"/>
+<title>Pledge Book</title>
+</head>
+<body>
+
+<!-- App bar -->
+<div class="appbar">
+  <svg class="logo" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="60" cy="60" r="57" fill="#fff"/>
+    <circle cx="60" cy="46" r="16" fill="none" stroke="#8e1b1b" stroke-width="3"/>
+    <path d="M47 80 C47 63 52 55 60 55 C68 55 73 63 73 80 C66 76 54 76 47 80 Z" fill="#8e1b1b"/>
+    <circle cx="60" cy="46" r="7" fill="#8e1b1b"/>
+    <path d="M53 40 L56 33 L60 38 L64 33 L67 40 Z" fill="#c9a24a"/>
+    <path d="M60 92 C49 92 41 86 39 80 C48 84 54 84 60 82 C66 84 72 84 81 80 C79 86 71 92 60 92 Z" fill="#8e1b1b"/>
+  </svg>
+  <button class="back-btn" id="backBtn" style="display:none" aria-label="Back">&#8592;</button>
+  <div class="title" id="barTitle">Pledge Book<small></small></div>
+  <button class="iconbtn" id="settingsBtn" aria-label="Settings" title="Settings">&#9881;</button>
+</div>
+
+<!-- Google Drive save indicator -->
+<div class="sync-chip" id="syncChip" aria-live="polite"></div>
+
+<!-- ======================= LOGIN ======================= -->
+<section class="view" id="view-login">
+  <div class="wrap" style="max-width:420px;">
+    <div style="text-align:center;margin:18px 0 20px;">
+      <div style="font-size:26px;font-weight:bold;color:var(--accent);letter-spacing:2px;">PLEDGE BOOK</div>
+      <div style="letter-spacing:4px;color:var(--fill);font-size:11px;font-weight:bold;">PAWN &amp; GOLD-LOAN MANAGER</div>
+    </div>
+    <div class="settings-group">
+      <h3 id="authTitle">Sign in to your shop</h3>
+      <p class="storage-line">Sign in with Google. Your pledges are saved to your own Google Drive and appear on every device you sign in on.</p>
+      <div id="authError" style="color:var(--danger);font-size:13px;min-height:18px;margin:8px 0;"></div>
+      <button class="btn full" id="googleSignInBtn" style="background:#fff;border:1px solid #dadce0;color:#3c4043;font-weight:600;display:flex;align-items:center;justify-content:center;gap:12px;">
+        <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+        Sign in with Google
+      </button>
+    </div>
+    <p class="storage-line" style="text-align:center;">Free. Your pledges save to your own Google Drive automatically — the app only ever touches its own data file, nothing else in your Drive.</p>
+  </div>
+</section>
+
+<!-- ======================= HOME ======================= -->
+<section class="view active" id="view-home">
+  <div class="wrap">
+    <input class="search" id="searchInput" type="search" placeholder="Search by name, phone, pledge no, or date…" autocomplete="off"/>
+    <div class="filters">
+      <button class="chip active" data-filter="all">All</button>
+      <button class="chip" data-filter="due">Due / Overdue</button>
+      <button class="chip" data-filter="active">Active</button>
+      <button class="chip" data-filter="redeemed">Redeemed</button>
+    </div>
+    <div id="reminderBanner"></div>
+    <div id="pledgeList"></div>
+  </div>
+  <button class="fab" id="newBtn">&#43; New Pledge</button>
+</section>
+
+<!-- ======================= FORM ======================= -->
+<section class="view" id="view-form">
+  <div class="wrap">
+
+    <div class="row2">
+      <div class="field">
+        <label for="f-pledgeNo">Pledge No.</label>
+        <input id="f-pledgeNo" type="number" inputmode="numeric" placeholder="e.g. 3354"/>
+      </div>
+      <div class="field">
+        <label for="f-date">Date</label>
+        <input id="f-date" type="date"/>
+      </div>
+    </div>
+
+    <div class="section-title">Pawner (Customer)</div>
+    <div class="field">
+      <label for="f-name">Name of Pawner</label>
+      <input id="f-name" type="text" placeholder="Full name"/>
+    </div>
+    <div class="field">
+      <label for="f-mobile">Mobile Number <span class="hint">(optional)</span></label>
+      <input id="f-mobile" type="tel" inputmode="tel" maxlength="15" placeholder="e.g. 98765 43210"/>
+    </div>
+    <div class="field">
+      <label for="f-address">Full Address</label>
+      <textarea id="f-address" placeholder="House no, street, town"></textarea>
+    </div>
+    <div class="field">
+      <label for="f-aadhaar">Aadhaar No. <span class="hint">(printed masked as XXXX XXXX 1234)</span></label>
+      <input id="f-aadhaar" type="text" inputmode="numeric" maxlength="14" placeholder="12-digit number"/>
+    </div>
+    <div class="photo-field" data-photo data-key="customerPhoto">
+      <div class="ph-label">Customer Photo</div>
+      <div class="photo-box">
+        <div class="ph-empty">
+          <button type="button" class="pbtn" data-cam>&#128247; Camera</button>
+          <button type="button" class="pbtn" data-gal>&#128247; Gallery</button>
+        </div>
+        <img class="ph-img" alt=""/>
+        <button type="button" class="ph-remove" title="Remove">&#10005;</button>
+        <input type="file" accept="image/*" capture="user" hidden data-cam-input/>
+        <input type="file" accept="image/*" hidden data-gal-input/>
+      </div>
+    </div>
+
+    <div class="section-title">Loan</div>
+    <div class="field">
+      <label for="f-principal">Amount of Principal (₹)</label>
+      <input id="f-principal" type="number" inputmode="numeric" placeholder="e.g. 20000"/>
+      <div class="words-out" id="f-words"></div>
+    </div>
+    <div class="field">
+      <label for="f-rate">Rate of Interest / Risk-safety Charges</label>
+      <input id="f-rate" type="text" placeholder="e.g. ₹3 per ₹100 per month"/>
+    </div>
+
+    <div class="section-title">Articles</div>
+    <div class="field">
+      <label for="f-desc">Description of Article(s)</label>
+      <textarea id="f-desc" placeholder="e.g. 2 gold bangles"></textarea>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label for="f-gross">Gross Wt. (g)</label>
+        <input id="f-gross" type="number" inputmode="decimal" step="0.01" placeholder="0.00"/>
+      </div>
+      <div class="field">
+        <label for="f-less">Less (g) <span class="hint">tankam/stone</span></label>
+        <input id="f-less" type="number" inputmode="decimal" step="0.01" placeholder="0.00"/>
+      </div>
+      <div class="field">
+        <label for="f-nett">Nett Wt. (g)</label>
+        <input id="f-nett" class="computed" type="text" readonly placeholder="auto"/>
+      </div>
+    </div>
+    <div class="field">
+      <label for="f-market">Market Value of Article (₹)</label>
+      <input id="f-market" type="number" inputmode="numeric" placeholder="e.g. 28000"/>
+    </div>
+    <div class="photo-field" data-photo data-key="articlePhoto">
+      <div class="ph-label">Article / Item Photo</div>
+      <div class="photo-box">
+        <div class="ph-empty">
+          <button type="button" class="pbtn" data-cam>&#128247; Camera</button>
+          <button type="button" class="pbtn" data-gal>&#128247; Gallery</button>
+        </div>
+        <img class="ph-img" alt=""/>
+        <button type="button" class="ph-remove" title="Remove">&#10005;</button>
+        <input type="file" accept="image/*" capture="environment" hidden data-cam-input/>
+        <input type="file" accept="image/*" hidden data-gal-input/>
+      </div>
+    </div>
+
+    <div class="section-title">Redemption</div>
+    <div class="static-note">
+      Time agreed for redemption: <b>SIX MONTHS</b>
+      &nbsp;•&nbsp; Matures: <span class="maturity-out" id="f-maturity">—</span>
+    </div>
+
+    <div class="section-title">Signatures (sign with finger)</div>
+    <div class="sign-grid">
+      <div class="sign-field">
+        <div class="s-label"><span>Signature / Thumb of Pawner</span><button type="button" class="sign-clear" data-clear="pawner">Clear</button></div>
+        <canvas class="pad" id="pad-pawner"></canvas>
+      </div>
+      <div class="sign-field">
+        <div class="s-label"><span>Signature of Pawn Broker / Agent</span><button type="button" class="sign-clear" data-clear="broker">Clear</button></div>
+        <canvas class="pad" id="pad-broker"></canvas>
+      </div>
+      <div class="sign-field">
+        <div class="s-label"><span>Received in good condition — Pawner sign / thumb</span><button type="button" class="sign-clear" data-clear="footer">Clear</button></div>
+        <canvas class="pad" id="pad-footer"></canvas>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn ghost" id="cancelFormBtn">Cancel</button>
+      <button class="btn primary" id="saveFormBtn">Save Pledge</button>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= RECEIPT ======================= -->
+<section class="view" id="view-receipt">
+  <div class="wrap">
+    <div class="receipt-status" id="receiptStatus"></div>
+    <div class="receipt-actions">
+      <button class="btn share" id="shareBtn">&#128257; Share</button>
+      <button class="btn print" id="printBtn">&#128424; Print</button>
+      <button class="btn edit" id="editBtn">&#9998; Edit</button>
+      <button class="btn redeem" id="redeemBtn">&#10003; Redeemed</button>
+      <button class="btn delete" id="deleteBtn">&#128465; Delete</button>
+    </div>
+    <div class="receipt-img-wrap">
+      <img id="receiptImg" alt="Receipt preview"/>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= REDEEM FORM ======================= -->
+<section class="view" id="view-redeem">
+  <div class="wrap">
+
+    <div class="section-title">Redemption Date</div>
+    <div class="field">
+      <label for="r-date">Date of Redemption</label>
+      <input id="r-date" type="date"/>
+    </div>
+
+    <div class="section-title">Person Redeeming</div>
+    <div class="field">
+      <label for="r-name">Full Name</label>
+      <input id="r-name" type="text" placeholder="Full name"/>
+    </div>
+    <div class="field">
+      <label for="r-mobile">Mobile Number <span class="hint">(optional)</span></label>
+      <input id="r-mobile" type="tel" inputmode="tel" maxlength="15" placeholder="e.g. 98765 43210"/>
+    </div>
+    <div class="field">
+      <label for="r-address">Full Address</label>
+      <textarea id="r-address" placeholder="House no, street, town"></textarea>
+    </div>
+    <div class="field">
+      <label for="r-aadhaar">Aadhaar No. <span class="hint">(printed masked as XXXX XXXX 1234)</span></label>
+      <input id="r-aadhaar" type="text" inputmode="numeric" maxlength="14" placeholder="12-digit number"/>
+    </div>
+    <div class="photo-field" data-photo data-key="redeemerPhoto">
+      <div class="ph-label">Photo of Person Redeeming</div>
+      <div class="photo-box">
+        <div class="ph-empty">
+          <button type="button" class="pbtn" data-cam>&#128247; Camera</button>
+          <button type="button" class="pbtn" data-gal>&#128247; Gallery</button>
+        </div>
+        <img class="ph-img" alt=""/>
+        <button type="button" class="ph-remove" title="Remove">&#10005;</button>
+        <input type="file" accept="image/*" capture="user" hidden data-cam-input/>
+        <input type="file" accept="image/*" hidden data-gal-input/>
+      </div>
+    </div>
+
+    <div class="section-title">Signatures (sign with finger)</div>
+    <div class="sign-grid">
+      <div class="sign-field">
+        <div class="s-label"><span>Signature / Thumb of Redeemer</span><button type="button" class="sign-clear" data-rclear="redeemer">Clear</button></div>
+        <canvas class="pad" id="rpad-redeemer"></canvas>
+      </div>
+      <div class="sign-field">
+        <div class="s-label"><span>Signature of Pawn Broker / Agent</span><button type="button" class="sign-clear" data-rclear="broker">Clear</button></div>
+        <canvas class="pad" id="rpad-broker"></canvas>
+      </div>
+      <div class="sign-field">
+        <div class="s-label"><span>Articles delivered back — Broker sign</span><button type="button" class="sign-clear" data-rclear="footer">Clear</button></div>
+        <canvas class="pad" id="rpad-footer"></canvas>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn ghost" id="cancelRedeemBtn">Cancel</button>
+      <button class="btn primary" id="saveRedeemBtn">Complete Redemption</button>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= SETTINGS ======================= -->
+<section class="view" id="view-settings">
+  <div class="wrap">
+    <div class="settings-group" id="accountGroup">
+      <h3>Account &amp; Google Drive</h3>
+      <p class="storage-line">Your pledges are saved to your own Google Drive automatically — no manual backups needed.</p>
+      <p class="storage-line" id="accountEmail"></p>
+      <p class="storage-line" id="syncStatus"></p>
+      <div class="actions" style="margin-top:8px;">
+        <button class="btn ghost" id="syncNowBtn">Sync / Reconnect</button>
+        <button class="btn ghost" id="logoutBtn">Log out</button>
+      </div>
+    </div>
+    <div class="settings-group">
+      <h3>Shop details (printed on every receipt)</h3>
+      <div class="field"><label>Shop Name</label><input id="s-shopName" type="text"/></div>
+      <div class="field"><label>Sub-title</label><input id="s-shopSub" type="text"/></div>
+      <div class="field"><label>Address</label><input id="s-address" type="text"/></div>
+      <div class="row2">
+        <div class="field"><label>Licence — Name</label><input id="s-licenseName" type="text"/></div>
+        <div class="field"><label>Licence — City</label><input id="s-licenseCity" type="text"/></div>
+      </div>
+      <div class="field"><label>Licence No.</label><input id="s-licenseNo" type="text"/></div>
+      <div class="field"><label>Pawn Broker (name &amp; place)</label><input id="s-brokerName" type="text"/></div>
+      <div class="field"><label>Broker No. &amp; Date</label><input id="s-brokerNoDate" type="text"/></div>
+    </div>
+
+    <div class="settings-group">
+      <h3>Pledge numbering</h3>
+      <div class="field">
+        <label>Next Pledge No. <span class="hint">(used for the next new pledge; auto-increments)</span></label>
+        <input id="s-nextPledgeNo" type="number" inputmode="numeric"/>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <h3>Reminders</h3>
+      <div class="field">
+        <label>Warn me before a pledge is due <span class="hint">(days)</span></label>
+        <input id="s-reminderDays" type="number" inputmode="numeric" min="0"/>
+      </div>
+      <p class="storage-line" id="alertStatus"></p>
+      <button class="btn ghost full" id="enableAlertsBtn">Turn on phone alerts</button>
+    </div>
+
+    <div class="settings-group">
+      <h3>Logo</h3>
+      <div class="photo-field" data-photo data-key="customLogo">
+        <div class="ph-label">Shop Logo <span class="hint">(optional — leave empty for the default Lakshmi seal)</span></div>
+        <div class="photo-box">
+          <div class="ph-empty">
+            <button type="button" class="pbtn" data-gal>&#128247; Choose image</button>
+          </div>
+          <img class="ph-img" alt=""/>
+          <button type="button" class="ph-remove" title="Remove">&#10005;</button>
+          <input type="file" accept="image/*" hidden data-cam-input/>
+          <input type="file" accept="image/*" hidden data-gal-input/>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn primary full" id="saveSettingsBtn">Save Settings</button>
+    </div>
+  </div>
+</section>
+
+<!-- offscreen render + print -->
+<div id="renderStage"></div>
+<div id="printArea"><img id="printImg" alt=""/></div>
+<div class="toast" id="toast"></div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="./app.js"></script>
+</body>
+</html>

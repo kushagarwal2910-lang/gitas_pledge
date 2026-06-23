@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Pledge Book">
+  <rect width="512" height="512" rx="96" fill="#8e1b1b"/>
+  <rect x="40" y="40" width="432" height="432" rx="72" fill="none" stroke="#c9a24a" stroke-width="8"/>
+  <g transform="translate(106,96) scale(2.5)" stroke-linecap="round">
+    <circle cx="60" cy="60" r="57" fill="#fff" stroke="#7a1717" stroke-width="2.5"/>
+    <circle cx="60" cy="60" r="51" fill="none" stroke="#c9a24a" stroke-width="1.3"/>
+    <g fill="#0b3d91" opacity="0.9">
+      <path d="M18 50 c5 -6 14 -7 19 -2 c1 3 -1 6 -4 6 c3 2 2 7 -2 8 l-1 -4 l-2 4 l-1 -4 c-5 0 -9 -4 -9 -8 z"/>
+      <path d="M102 50 c-5 -6 -14 -7 -19 -2 c-1 3 1 6 4 6 c-3 2 -2 7 2 8 l1 -4 l2 4 l1 -4 c5 0 9 -4 9 -8 z"/>
+    </g>
+    <circle cx="60" cy="46" r="17" fill="none" stroke="#c9a24a" stroke-width="1.3"/>
+    <path d="M47 80 C47 63 52 55 60 55 C68 55 73 63 73 80 C66 76 54 76 47 80 Z" fill="#8e1b1b"/>
+    <path d="M54 58 C48 54 44 49 42 44" fill="none" stroke="#8e1b1b" stroke-width="2.6"/>
+    <path d="M66 58 C72 54 76 49 78 44" fill="none" stroke="#8e1b1b" stroke-width="2.6"/>
+    <path d="M52 63 C46 67 44 73 45 78" fill="none" stroke="#8e1b1b" stroke-width="3"/>
+    <path d="M68 63 C74 67 76 73 75 78" fill="none" stroke="#8e1b1b" stroke-width="3"/>
+    <circle cx="40" cy="42" r="3.6" fill="#c9a24a"/>
+    <circle cx="80" cy="42" r="3.6" fill="#c9a24a"/>
+    <circle cx="60" cy="46" r="7" fill="#8e1b1b"/>
+    <path d="M53 40 L56 33 L60 38 L64 33 L67 40 Z" fill="#c9a24a"/>
+    <circle cx="60" cy="31.5" r="1.6" fill="#c9a24a"/>
+    <path d="M60 92 C49 92 41 86 39 80 C48 84 54 84 60 82 C66 84 72 84 81 80 C79 86 71 92 60 92 Z" fill="#8e1b1b"/>
+    <path d="M46 82 C48 76 53 73 60 73 C67 73 72 76 74 82" fill="none" stroke="#c9a24a" stroke-width="1.3"/>
+    <circle cx="50" cy="99" r="3" fill="#c9a24a"/>
+    <circle cx="60" cy="101" r="3.2" fill="#c9a24a"/>
+    <circle cx="70" cy="99" r="3" fill="#c9a24a"/>
+  </g>
+</svg>

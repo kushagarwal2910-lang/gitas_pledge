@@ -1,0 +1,9 @@
+# Claude Code / local tooling
+.claude/
+
+# Packaged builds
+*.zip
+
+# OS cruft
+.DS_Store
+Thumbs.db

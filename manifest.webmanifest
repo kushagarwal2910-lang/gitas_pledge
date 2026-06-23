@@ -1,0 +1,15 @@
+{
+  "name": "Pledge Book",
+  "short_name": "Pledge Book",
+  "description": "Pledge receipt & register for pawnbrokers — works offline, backs up to your Google Drive.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f1ea",
+  "theme_color": "#8e1b1b",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
