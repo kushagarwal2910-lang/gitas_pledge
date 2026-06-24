@@ -972,6 +972,18 @@ async function driveDownloadJSON(fileId) {
   const r = await driveFetch('drive/v3/files/' + fileId + '?alt=media');
   return await r.json();
 }
+async function driveFindFolderByName(name) {
+  const q = "mimeType='application/vnd.google-apps.folder' and name='" + qEsc(name) + "' and trashed=false";
+  const r = await driveFetch('drive/v3/files?spaces=drive&fields=' + encodeURIComponent('files(id,name)') + '&q=' + encodeURIComponent(q));
+  const j = await r.json();
+  return (j.files && j.files[0]) || null;
+}
+async function driveFindInFolder(folderId, name) {
+  const q = "name='" + qEsc(name) + "' and '" + folderId + "' in parents and trashed=false";
+  const r = await driveFetch('drive/v3/files?spaces=drive&fields=' + encodeURIComponent('files(id,name)') + '&q=' + encodeURIComponent(q));
+  const j = await r.json();
+  return (j.files && j.files[0]) || null;
+}
 /* ---------------- per-pledge incremental sync ---------------- */
 // Upload ONE pledge as its own small file (PATCH via cached id, else create). This is the speed win.
 async function drivePutPledge(p) {
@@ -998,20 +1010,37 @@ async function drivePutSettings() {
   driveFileMap['__settings__'] = res.id; saveFileMap(); bumpLastPull(res.modifiedTime);
 }
 // Push only the records that changed (one small file each) — fast regardless of how many pledges exist.
+// Resilient: a transient failure on one pledge is skipped (it stays pending for the next cycle) so a
+// single bad record can never block the rest; auth failures stop early to prompt a reconnect. Shows
+// progress during a big batch (e.g. the first migration of all existing pledges).
 async function pushDirty() {
   const localAll = await dbAll('pledges');
-  for (const p of localAll) {
-    if (!p.pendingPush) continue;
-    await drivePutPledge(p);
-    // Re-read before clearing the flag so an edit made during the upload isn't lost.
-    const fresh = await dbGet('pledges', p.id);
-    if (fresh && fresh.updatedAt === p.updatedAt) { fresh.pendingPush = false; await dbPut('pledges', fresh); }
+  const dirty = localAll.filter(function (p) { return p.pendingPush; });
+  let done = 0, failed = 0, firstErr = null;
+  for (const p of dirty) {
+    try {
+      await drivePutPledge(p);
+      // Re-read before clearing the flag so an edit made during the upload isn't lost.
+      const fresh = await dbGet('pledges', p.id);
+      if (fresh && fresh.updatedAt === p.updatedAt) { fresh.pendingPush = false; await dbPut('pledges', fresh); }
+    } catch (e) {
+      const m = (e && e.message) || '';
+      if (/google-not-ready|no-token|interaction|drive-401/.test(m)) throw e; // needs reconnect — stop
+      failed++; if (!firstErr) firstErr = e;                                    // transient — skip; retried next cycle
+    }
+    done++;
+    if (dirty.length > 3) {
+      const msg = 'Saving ' + done + ' of ' + dirty.length + ' to Google Drive…';
+      setSyncStatus(msg);
+      const chip = $('#syncChip');
+      if (chip && chip.classList.contains('saving')) showSyncChip('saving', msg);
+    }
   }
   if (settings.pendingPush) {
-    await drivePutSettings();
-    settings.pendingPush = false;
-    await persistSettings(true);
+    try { await drivePutSettings(); settings.pendingPush = false; await persistSettings(true); }
+    catch (e) { const m = (e && e.message) || ''; if (/google-not-ready|no-token|interaction|drive-401/.test(m)) throw e; failed++; if (!firstErr) firstErr = e; }
   }
+  if (failed) throw (firstErr || new Error('partial-sync')); // surface so the leftovers get retried
 }
 // Download only files changed since the last pull and merge them into the local cache.
 async function pullChanges() {
@@ -1068,14 +1097,19 @@ async function migrateOnce() {
   let localAll = await dbAll('pledges');
   if (!localAll.length) {
     try {
-      await ensureFolder();
-      const f = await driveFindFile(DATA_FILE_NAME);
-      if (f) {
+      // Recover from whichever legacy backup folder this account used.
+      const legacyFolders = ['Geetha Agarwal Money Lenders - Backups', APP_FOLDER_NAME];
+      for (const fn of legacyFolders) {
+        const folder = await driveFindFolderByName(fn);
+        if (!folder) continue;
+        const f = await driveFindInFolder(folder.id, DATA_FILE_NAME);
+        if (!f) continue;
         const remote = await driveDownloadJSON(f.id);
         if (remote && Array.isArray(remote.pledges)) {
           for (const rp of remote.pledges) { const obj = Object.assign({}, rp); delete obj.id; obj.pendingPush = true; await dbPut('pledges', obj); }
           if (remote.settings) { settings = Object.assign({}, DEFAULT_SETTINGS, remote.settings, { key: 'app' }); settings.pendingPush = true; }
         }
+        break;
       }
     } catch (e) {}
     localAll = await dbAll('pledges');
