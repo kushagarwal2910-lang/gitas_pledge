@@ -184,6 +184,19 @@ input,textarea,select{font-family:inherit;font-size:16px;} /* 16px stops iOS/And
 .storage-line{font-size:13px;color:var(--muted);margin-top:8px;}
 .danger-text{color:var(--danger);}
 
+/* ---------- Report ---------- */
+.report-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.stat{background:#faf7f0;border:1px solid var(--line);border-radius:10px;padding:10px 12px;}
+.stat-num{font-size:18px;font-weight:800;color:var(--fill);line-height:1.2;word-break:break-word;}
+.stat-lbl{font-size:12px;color:var(--muted);margin-top:3px;}
+.stat-sub{display:block;font-size:11px;color:#8a8a8a;margin-top:2px;}
+.awt-row{display:flex;justify-content:space-between;gap:10px;padding:8px 2px;border-bottom:1px solid var(--line);font-size:14px;}
+.awt-name{color:#333;}
+.awt-n{color:var(--muted);font-size:12px;}
+.awt-wt{font-weight:700;color:var(--fill);white-space:nowrap;}
+.awt-total{border-bottom:none;border-top:2px solid var(--gold);font-weight:800;margin-top:2px;}
+.awt-total .awt-name{color:var(--accent);font-weight:800;}
+
 /* ---------- Toast ---------- */
 .toast{
   position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);

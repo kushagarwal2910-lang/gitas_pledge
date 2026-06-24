@@ -1132,6 +1132,7 @@ function showView(id, title, back) {
   $('#backBtn').style.display = back ? 'block' : 'none';
   const home = id === 'view-home';
   $('#settingsBtn').style.display = home ? 'flex' : 'none';
+  $('#reportBtn').style.display = home ? 'flex' : 'none';
   $('#newBtn').style.display = home ? 'flex' : 'none';
   window.scrollTo(0, 0);
 }
@@ -1595,10 +1596,147 @@ async function saveSettingsFromForm() {
   toast('Settings saved');
   nav('home');
 }
+
+/* ---------------- REPORT ---------------- */
+function maturityISO(p) {
+  const m = maturityDateObj(p.date);
+  if (!m) return null;
+  return m.getFullYear() + '-' + String(m.getMonth() + 1).padStart(2, '0') + '-' + String(m.getDate()).padStart(2, '0');
+}
+// Collapse a free-text article description to a grouping key so like items combine.
+function normArticle(s) {
+  let t = String(s || '').toLowerCase().replace(/[._\-]+/g, ' ');
+  t = t.replace(/\b\d+(\.\d+)?\s*(gm|gms|g|gram|grams|grm|pcs|pc|pieces|piece|nos|no|qty)\b/g, ' '); // qty+unit
+  t = t.replace(/^[\s\d.,/]+/, '');                 // leading quantity/numbers
+  t = t.replace(/\s+/g, ' ').trim();
+  t = t.replace(/s\b/g, '');                         // crude singularize (bangles -> bangle)
+  return t.trim();
+}
+function titleCase(s) { return String(s || '').replace(/\b\w/g, function (c) { return c.toUpperCase(); }); }
+function inThisMonth(iso) {
+  const p = String(iso || '').split('-').map(Number);
+  if (p.length !== 3 || !p[0]) return false;
+  const now = new Date();
+  return p[0] === now.getFullYear() && (p[1] - 1) === now.getMonth();
+}
+function rupee(n) { return '&#8377;' + formatINR(Math.round(Number(n) || 0)); }
+
+async function showReport() {
+  const all = (await dbAll('pledges')).filter(function (p) { return !p.deleted; });
+  const win = reminderWindow();
+  const now = new Date();
+  const outstanding = all.filter(function (p) { return p.status !== 'redeemed'; });
+  const redeemed = all.filter(function (p) { return p.status === 'redeemed'; });
+
+  // Outstanding money
+  let principalOut = 0, recvToday = 0, recvMat = 0, collateral = 0, noRate = 0;
+  outstanding.forEach(function (p) {
+    const pr = Number(p.principal) || 0;
+    principalOut += pr;
+    collateral += Number(p.marketValue) || 0;
+    if (pr && pledgeRate(p) == null) noRate++;
+    const dT = computeDues(p, todayISO());
+    recvToday += dT ? dT.total : pr;
+    const mISO = maturityISO(p);
+    const dM = mISO ? computeDues(p, mISO) : null;
+    recvMat += dM ? dM.total : pr;
+  });
+
+  // Redeemed money
+  let principalRedeemed = 0, received = 0;
+  redeemed.forEach(function (p) {
+    const pr = Number(p.principal) || 0;
+    principalRedeemed += pr;
+    const rd = p.redemptionDetails && p.redemptionDetails.redeemedDate;
+    const d = rd ? computeDues(p, rd) : null;
+    received += d ? d.total : pr;
+  });
+
+  // Counts
+  let overdue = 0, dueSoon = 0;
+  outstanding.forEach(function (p) { const i = dueInfo(p, win); if (i) { (i.kind === 'overdue') ? overdue++ : dueSoon++; } });
+
+  // This month
+  let nmCount = 0, nmAmt = 0, rmCount = 0, rmAmt = 0;
+  all.forEach(function (p) {
+    if (!p.createdAt) return;
+    const d = new Date(p.createdAt);
+    if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) { nmCount++; nmAmt += Number(p.principal) || 0; }
+  });
+  redeemed.forEach(function (p) {
+    const rd = p.redemptionDetails && p.redemptionDetails.redeemedDate;
+    if (rd && inThisMonth(rd)) { rmCount++; const d = computeDues(p, rd); rmAmt += d ? d.total : (Number(p.principal) || 0); }
+  });
+
+  // Article gross weight (outstanding only)
+  const groups = {};
+  outstanding.forEach(function (p) {
+    const g = Number(p.gross) || 0;
+    if (!g) return;
+    const key = normArticle(p.articleDesc) || 'unspecified';
+    if (!groups[key]) groups[key] = { label: titleCase(key), wt: 0, n: 0 };
+    groups[key].wt += g; groups[key].n++;
+  });
+  const rows = Object.keys(groups).map(function (k) { return groups[k]; }).sort(function (a, b) { return b.wt - a.wt; });
+  let totalWt = 0; rows.forEach(function (r) { totalWt += r.wt; });
+
+  // value/sub are app-generated (rupee()/counts) — inserted as HTML so the ₹ entity renders.
+  function stat(label, value, sub) {
+    return '<div class="stat"><div class="stat-num">' + value + '</div><div class="stat-lbl">' + escapeHTML(label)
+      + (sub ? '<span class="stat-sub">' + sub + '</span>' : '') + '</div></div>';
+  }
+
+  let html = '';
+  html += '<div class="settings-group"><h3>Outstanding loans (active + due/overdue)</h3><div class="report-grid">';
+  html += stat('Principal lent out', rupee(principalOut), outstanding.length + ' pledge(s)');
+  html += stat('Receivable — today', rupee(recvToday));
+  html += stat('Receivable — at maturity', rupee(recvMat));
+  html += stat('Expected profit — today', rupee(recvToday - principalOut));
+  html += stat('Expected profit — maturity', rupee(recvMat - principalOut));
+  html += stat('Collateral value', rupee(collateral), 'cushion ' + rupee(collateral - principalOut));
+  html += '</div></div>';
+
+  html += '<div class="settings-group"><h3>Completed (redeemed)</h3><div class="report-grid">';
+  html += stat('Total received', rupee(received));
+  html += stat('Profit realized', rupee(received - principalRedeemed));
+  html += stat('Redeemed pledges', String(redeemed.length));
+  html += '</div></div>';
+
+  html += '<div class="settings-group"><h3>Counts</h3><div class="report-grid">';
+  html += stat('Active (outstanding)', String(outstanding.length));
+  html += stat('Due soon', String(dueSoon));
+  html += stat('Overdue', String(overdue));
+  html += stat('Redeemed', String(redeemed.length));
+  html += '</div></div>';
+
+  html += '<div class="settings-group"><h3>This month</h3><div class="report-grid">';
+  html += stat('New pledges', String(nmCount), rupee(nmAmt) + ' lent');
+  html += stat('Redemptions', String(rmCount), rupee(rmAmt) + ' received');
+  html += '</div></div>';
+
+  html += '<div class="settings-group"><h3>Article weight — gross (outstanding only)</h3>';
+  if (!rows.length) html += '<p class="storage-line">No article weights recorded yet.</p>';
+  else {
+    html += '<div class="awt">';
+    rows.forEach(function (r) {
+      html += '<div class="awt-row"><span class="awt-name">' + escapeHTML(r.label) + ' <span class="awt-n">(' + r.n + ')</span></span><span class="awt-wt">' + r.wt.toFixed(2) + ' g</span></div>';
+    });
+    html += '<div class="awt-row awt-total"><span class="awt-name">Total</span><span class="awt-wt">' + totalWt.toFixed(2) + ' g</span></div>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  if (noRate) html += '<p class="storage-line danger-text">' + noRate + ' outstanding pledge(s) have no interest rate set — counted at principal only.</p>';
+
+  $('#reportBody').innerHTML = html;
+  showView('view-report', 'Business Report', true);
+}
+
 /* ---------------- wiring ---------------- */
 function wireHandlers() {
   $('#newBtn').onclick = () => nav('new');
   $('#settingsBtn').onclick = () => nav('settings');
+  $('#reportBtn').onclick = () => nav('report');
   $('#backBtn').onclick = () => { if (history.length > 1) history.back(); else nav('home'); };
 
   $('#searchInput').oninput = renderList;
@@ -1650,6 +1788,7 @@ function route() {
   else if (h.indexOf('view-') === 0) showReceipt(Number(h.slice(5)));
   else if (h.indexOf('redeem-') === 0) showRedemptionForm(Number(h.slice(7)));
   else if (h === 'settings') showSettings();
+  else if (h === 'report') showReport();
   else showHome();
 }
 

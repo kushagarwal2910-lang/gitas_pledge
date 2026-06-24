@@ -1,5 +1,5 @@
 /* Service worker: cache the app shell so it works fully offline. */
-const CACHE = 'ga-pledge-v9';
+const CACHE = 'ga-pledge-v10';
 const ASSETS = [
   './',
   './index.html',
