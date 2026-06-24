@@ -5,8 +5,9 @@
 /* ---------------- cloud config ---------------- */
 const GOOGLE_CLIENT_ID = '141909794238-2p26p5tbfhk9kdacm7ncdmeusra7dmu3.apps.googleusercontent.com';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-const APP_FOLDER_NAME = 'Pledge Book - Backups';
-const DATA_FILE_NAME = 'pledge-book-data.json';
+const APP_FOLDER_NAME = 'Pledge Book - Backups';   // legacy folder — read once for migration
+const DATA_FILE_NAME = 'pledge-book-data.json';    // legacy monolithic file — migration source only
+const DATA_FOLDER_NAME = 'Pledge Book Data';       // new home: one small file per pledge
 // Google sign-in + Drive sync. Set false for a pure on-device build (no login).
 const CLOUD_ENABLED = true;
 
@@ -137,6 +138,36 @@ function computeNett(g, l) {
   if (isFinite(G) && isFinite(L)) return (G - L).toFixed(2);
   if (isFinite(G)) return G.toFixed(2);
   return '';
+}
+
+/* ---------------- interest / dues ---------------- */
+function daysBetween(fromISO, toDateObj) {
+  const p = String(fromISO || '').split('-').map(Number);
+  if (p.length !== 3 || !p[0]) return null;
+  const from = new Date(p[0], p[1] - 1, p[2]); from.setHours(0, 0, 0, 0);
+  const to = new Date(toDateObj); to.setHours(0, 0, 0, 0);
+  return Math.round((to.getTime() - from.getTime()) / 86400000);
+}
+// Numeric monthly rate (₹ per ₹100 per month = % per month): prefer the structured field,
+// else fall back to the first number found in the free-text rate.
+function pledgeRate(p) {
+  const r = parseFloat(p.interestRate);
+  if (isFinite(r) && r > 0) return r;
+  const m = String(p.rate || '').match(/\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
+// Simple interest, pro-rated by days: interest = principal × rate% × (days / 30).
+function computeDues(p, asOfISO) {
+  const principal = Number(p.principal) || 0;
+  const rate = pledgeRate(p);
+  if (!principal || rate == null) return null;
+  const a = String(asOfISO || '').split('-').map(Number);
+  if (a.length !== 3 || !a[0]) return null;
+  let days = daysBetween(p.date, new Date(a[0], a[1] - 1, a[2]));
+  if (days == null) return null;
+  if (days < 0) days = 0;
+  const interest = principal * (rate / 100) * (days / 30);
+  return { days: days, rate: rate, principal: principal, interest: Math.round(interest), total: Math.round(principal + interest) };
 }
 
 /* ---------------- IndexedDB ---------------- */
@@ -642,6 +673,12 @@ function uuid() {
   });
 }
 let gTokenClient = null, gAccessToken = null, gTokenExpiry = 0, driveFolderId = null;
+// Per-pledge storage: dedicated data folder + a uid->Drive fileId cache so a save PATCHes
+// one file directly with no lookup. ('__settings__' holds the settings.json file id.)
+let driveDataFolderId = (function () { try { return localStorage.getItem('ga_dataFolder') || null; } catch (e) { return null; } })();
+let driveFileMap = (function () { try { return JSON.parse(localStorage.getItem('ga_fileMap') || '{}') || {}; } catch (e) { return {}; } })();
+function saveFileMap() { try { localStorage.setItem('ga_fileMap', JSON.stringify(driveFileMap)); } catch (e) {} }
+function bumpLastPull(t) { if (t && (!lastPullAt || Date.parse(t) > Date.parse(lastPullAt))) { lastPullAt = t; try { localStorage.setItem('ga_lastPull', lastPullAt); } catch (e) {} } }
 function gisReady() { return !!(window.google && google.accounts && google.accounts.oauth2); }
 function whenGisReady(timeoutMs) {
   return new Promise(function (resolve) {
@@ -768,14 +805,15 @@ function touchSettings() { settings.updatedAt = Date.now(); settings.pendingPush
 let syncTimer = null;
 function syncAll() { if (syncTimer) clearTimeout(syncTimer); syncTimer = setTimeout(function () { _syncAll(); }, 350); }
 
-// The actual Drive round-trip: token -> folder -> pull -> push. Throws on failure.
+// The actual Drive round-trip: token -> data folder -> one-time migrate -> pull -> push. Throws on failure.
 async function performSync() {
   await whenGisReady(5000);
   initGoogle();
   await getAccessToken(false);
-  await ensureFolder();
-  await syncPull();
-  await syncPush();
+  await ensureDataFolder();
+  await migrateOnce();
+  await pullChanges();
+  await pushDirty();
 }
 
 // Silent background sync (no on-screen chip) — used on app focus, reconnect, settings save.
@@ -807,10 +845,15 @@ async function syncNow() {
   while (syncing && waited < 10000) { await new Promise(function (r) { setTimeout(r, 150); }); waited += 150; }
   syncing = true;
   try {
-    await performSync();
+    // Push-only: upload just the changed pledge's file → fast green ✓. Pulls happen in the background.
+    await whenGisReady(5000);
+    initGoogle();
+    await getAccessToken(false);
+    await ensureDataFolder();
+    await migrateOnce();
+    await pushDirty();
     showSyncChip('saved', 'Saved to Google Drive');
     setSyncStatus('✅ Saved to Google Drive · ' + new Date().toLocaleTimeString());
-    if ($('#view-home').classList.contains('active')) showHome();
   } catch (e) {
     const m = (e && e.message) || '';
     if (m === 'google-not-ready' || m === 'no-token' || m.indexOf('interaction') >= 0) {
@@ -878,13 +921,40 @@ async function driveFindFile(name) {
   const j = await r.json();
   return (j.files && j.files[0]) || null;
 }
-async function driveUploadJSON(name, content, existingId) {
+async function ensureDataFolder() {
+  if (driveDataFolderId) return driveDataFolderId;
+  const q = "mimeType='application/vnd.google-apps.folder' and name='" + qEsc(DATA_FOLDER_NAME) + "' and trashed=false";
+  const r = await driveFetch('drive/v3/files?spaces=drive&fields=' + encodeURIComponent('files(id,name)') + '&q=' + encodeURIComponent(q));
+  const j = await r.json();
+  if (j.files && j.files.length) driveDataFolderId = j.files[0].id;
+  else {
+    const cr = await driveFetch('drive/v3/files?fields=id', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: DATA_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }) });
+    const cj = await cr.json(); driveDataFolderId = cj.id;
+  }
+  try { localStorage.setItem('ga_dataFolder', driveDataFolderId); } catch (e) {}
+  return driveDataFolderId;
+}
+// List every file matching a query, following pagination (folders can hold thousands of pledges).
+async function driveListAll(query) {
+  let files = [], pageToken = null;
+  do {
+    let url = 'drive/v3/files?spaces=drive&pageSize=1000&fields=' + encodeURIComponent('nextPageToken,files(id,name,modifiedTime)') + '&q=' + encodeURIComponent(query);
+    if (pageToken) url += '&pageToken=' + encodeURIComponent(pageToken);
+    const r = await driveFetch(url);
+    const j = await r.json();
+    if (j.files) files = files.concat(j.files);
+    pageToken = j.nextPageToken || null;
+  } while (pageToken);
+  return files;
+}
+async function driveUploadJSON(name, content, existingId, folderId) {
   const meta = { name: name };
-  if (!existingId) meta.parents = [driveFolderId];
+  if (!existingId) meta.parents = [folderId || driveFolderId];
   const boundary = 'gab' + Date.now();
   const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(meta) + '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + content + '\r\n--' + boundary + '--';
   const method = existingId ? 'PATCH' : 'POST';
-  const path = existingId ? ('upload/drive/v3/files/' + existingId + '?uploadType=multipart&fields=id') : ('upload/drive/v3/files?uploadType=multipart&fields=id');
+  const fields = '?uploadType=multipart&fields=' + encodeURIComponent('id,modifiedTime');
+  const path = existingId ? ('upload/drive/v3/files/' + existingId + fields) : ('upload/drive/v3/files' + fields);
   const r = await driveFetch(path, { method: method, headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body: body });
   return await r.json();
 }
@@ -892,77 +962,118 @@ async function driveDownloadJSON(fileId) {
   const r = await driveFetch('drive/v3/files/' + fileId + '?alt=media');
   return await r.json();
 }
-async function driveDelete(fileId) {
-  try { await driveFetch('drive/v3/files/' + fileId, { method: 'DELETE' }); } catch (e) {}
+/* ---------------- per-pledge incremental sync ---------------- */
+// Upload ONE pledge as its own small file (PATCH via cached id, else create). This is the speed win.
+async function drivePutPledge(p) {
+  const name = 'pledge-' + p.uid + '.json';
+  const obj = Object.assign({}, p); delete obj.id;        // 'id' is the local IndexedDB key only
+  const content = JSON.stringify(obj);
+  const id = driveFileMap[p.uid] || null;
+  let res;
+  try { res = await driveUploadJSON(name, content, id, driveDataFolderId); }
+  catch (e) {
+    if (id && /drive-404/.test(e.message || '')) { res = await driveUploadJSON(name, content, null, driveDataFolderId); }
+    else { throw e; }
+  }
+  driveFileMap[p.uid] = res.id; saveFileMap(); bumpLastPull(res.modifiedTime);
 }
-async function driveListBackups() {
-  await getAccessToken(false); await ensureFolder();
-  const q = "'" + driveFolderId + "' in parents and trashed=false and name contains 'Backup-'";
-  const r = await driveFetch('drive/v3/files?spaces=drive&orderBy=name desc&fields=' + encodeURIComponent('files(id,name,modifiedTime)') + '&q=' + encodeURIComponent(q));
-  const j = await r.json();
-  return j.files || [];
+async function drivePutSettings() {
+  const id = driveFileMap['__settings__'] || null;
+  let res;
+  try { res = await driveUploadJSON('settings.json', JSON.stringify(settings), id, driveDataFolderId); }
+  catch (e) {
+    if (id && /drive-404/.test(e.message || '')) { res = await driveUploadJSON('settings.json', JSON.stringify(settings), null, driveDataFolderId); }
+    else { throw e; }
+  }
+  driveFileMap['__settings__'] = res.id; saveFileMap(); bumpLastPull(res.modifiedTime);
 }
-async function syncPush() {
+// Push only the records that changed (one small file each) — fast regardless of how many pledges exist.
+async function pushDirty() {
   const localAll = await dbAll('pledges');
-  const dirty = localAll.some(function (p) { return p.pendingPush; }) || settings.pendingPush;
-  if (!dirty) return;
-  const dataset = JSON.stringify({ app: 'ga-pledge', version: 2, updatedAt: Date.now(), pledges: localAll, settings: settings });
-  const main = await driveFindFile(DATA_FILE_NAME);
-  await driveUploadJSON(DATA_FILE_NAME, dataset, main ? main.id : null);
-  const snapName = 'Backup-' + todayISO() + '.json';
-  const snap = await driveFindFile(snapName);
-  await driveUploadJSON(snapName, dataset, snap ? snap.id : null);
-  // Both uploads confirmed — stamp time and persist settings exactly once.
-  settings.lastBackupAt = Date.now();
-  settings.pendingPush = false;
-  await persistSettings(true);
-  // Keep the Drive folder tiny — one always-current file + a few recent dated snapshots.
-  try {
-    const KEEP = 3;
-    const backups = await driveListBackups(); // newest first
-    for (let i = KEEP; i < backups.length; i++) { await driveDelete(backups[i].id); }
-  } catch (e) {}
-  // Clear pledge flags — re-fetch each record so a concurrent edit made during the upload
-  // is never silently overwritten by the stale snapshot taken at the start of this function.
   for (const p of localAll) {
     if (!p.pendingPush) continue;
+    await drivePutPledge(p);
+    // Re-read before clearing the flag so an edit made during the upload isn't lost.
     const fresh = await dbGet('pledges', p.id);
-    if (!fresh) continue;
-    if (fresh.updatedAt === p.updatedAt) {
-      // Record unchanged during upload — safe to mark as synced.
-      fresh.pendingPush = false;
-      await dbPut('pledges', fresh);
-    }
-    // If updatedAt differs the user edited during the upload — leave pendingPush:true
-    // so the next sync cycle picks it up and sends the new version.
+    if (fresh && fresh.updatedAt === p.updatedAt) { fresh.pendingPush = false; await dbPut('pledges', fresh); }
+  }
+  if (settings.pendingPush) {
+    await drivePutSettings();
+    settings.pendingPush = false;
+    await persistSettings(true);
   }
 }
-async function syncPull() {
-  const f = await driveFindFile(DATA_FILE_NAME);
-  if (!f) return;
-  let remote;
-  try { remote = await driveDownloadJSON(f.id); } catch (e) { return; }
-  if (!remote || !Array.isArray(remote.pledges)) return;
+// Download only files changed since the last pull and merge them into the local cache.
+async function pullChanges() {
+  if (!driveDataFolderId) return;
+  const since = lastPullAt || '1970-01-01T00:00:00Z';
+  const q = "'" + driveDataFolderId + "' in parents and trashed=false and modifiedTime > '" + since + "'";
+  let files;
+  try { files = await driveListAll(q); } catch (e) { return; }
   const localAll = await dbAll('pledges');
   const byUid = {};
   localAll.forEach(function (p) { if (p.uid) byUid[p.uid] = p; });
-  for (const r of remote.pledges) {
-    if (!r.uid) continue;
-    const local = byUid[r.uid];
-    if (!local) {
-      if (r.deleted) continue;
-      const obj = Object.assign({}, r); delete obj.id; obj.pendingPush = false;
-      await dbPut('pledges', obj);
-    } else if ((r.updatedAt || 0) > (local.updatedAt || 0)) {
-      if (r.deleted) { await dbDel('pledges', local.id); }
-      else { const obj = Object.assign({}, r); obj.id = local.id; obj.pendingPush = false; await dbPut('pledges', obj); }
+  for (const f of files) {
+    if (f.name === 'settings.json') {
+      driveFileMap['__settings__'] = f.id;
+      let rs; try { rs = await driveDownloadJSON(f.id); } catch (e) { rs = null; }
+      if (rs && (rs.updatedAt || 0) > (settings.updatedAt || 0) && !settings.pendingPush) {
+        settings = Object.assign({}, DEFAULT_SETTINGS, rs, { key: 'app' });
+        await dbPut('settings', settings); applySettingsToBar();
+      }
+      bumpLastPull(f.modifiedTime); continue;
     }
+    if (f.name.indexOf('pledge-') !== 0) { bumpLastPull(f.modifiedTime); continue; }
+    let r; try { r = await driveDownloadJSON(f.id); } catch (e) { r = null; }
+    if (r && r.uid) {
+      driveFileMap[r.uid] = f.id;
+      const local = byUid[r.uid];
+      if (!local) {
+        if (!r.deleted) { const obj = Object.assign({}, r); delete obj.id; obj.pendingPush = false; const nid = await dbPut('pledges', obj); obj.id = nid; byUid[r.uid] = obj; }
+      } else if ((r.updatedAt || 0) > (local.updatedAt || 0)) {
+        if (r.deleted) { await dbDel('pledges', local.id); delete byUid[r.uid]; }
+        else { const obj = Object.assign({}, r); obj.id = local.id; obj.pendingPush = false; await dbPut('pledges', obj); byUid[r.uid] = obj; }
+      }
+    }
+    bumpLastPull(f.modifiedTime);
   }
-  if (remote.settings && (remote.settings.updatedAt || 0) > (settings.updatedAt || 0) && !settings.pendingPush) {
-    settings = Object.assign({}, DEFAULT_SETTINGS, remote.settings, { key: 'app' });
-    await dbPut('settings', settings);
-    applySettingsToBar();
+  saveFileMap();
+  if ($('#view-home').classList.contains('active')) showHome();
+}
+// One-time move from the old single-file model to per-pledge files in the new folder.
+async function migrateOnce() {
+  let migrated = false;
+  try { migrated = localStorage.getItem('ga_migratedV3') === '1'; } catch (e) {}
+  if (migrated) return;
+  // If the new folder already holds pledge files, adopt their ids and finish.
+  let existing = [];
+  try { existing = await driveListAll("'" + driveDataFolderId + "' in parents and trashed=false and name contains 'pledge-'"); } catch (e) {}
+  if (existing && existing.length) {
+    existing.forEach(function (f) { const m = /^pledge-(.+)\.json$/.exec(f.name || ''); if (m) driveFileMap[m[1]] = f.id; });
+    saveFileMap();
+    try { localStorage.setItem('ga_migratedV3', '1'); } catch (e) {}
+    return;
   }
+  // Otherwise seed the new folder. Prefer the local cache; if empty, import the legacy monolithic file.
+  let localAll = await dbAll('pledges');
+  if (!localAll.length) {
+    try {
+      await ensureFolder();
+      const f = await driveFindFile(DATA_FILE_NAME);
+      if (f) {
+        const remote = await driveDownloadJSON(f.id);
+        if (remote && Array.isArray(remote.pledges)) {
+          for (const rp of remote.pledges) { const obj = Object.assign({}, rp); delete obj.id; obj.pendingPush = true; await dbPut('pledges', obj); }
+          if (remote.settings) { settings = Object.assign({}, DEFAULT_SETTINGS, remote.settings, { key: 'app' }); settings.pendingPush = true; }
+        }
+      }
+    } catch (e) {}
+    localAll = await dbAll('pledges');
+  }
+  for (const p of localAll) { if (!p.pendingPush) { p.pendingPush = true; await dbPut('pledges', p); } }
+  settings.pendingPush = true;
+  await persistSettings(true);
+  try { localStorage.setItem('ga_migratedV3', '1'); } catch (e) {}
 }
 /* ---------------- navigation ---------------- */
 function nav(hash) { location.hash = hash; }
@@ -1158,6 +1269,7 @@ async function showForm(id) {
   $('#f-aadhaar').value = p.aadhaar || '';
   $('#f-principal').value = p.principal == null ? '' : p.principal;
   $('#f-rate').value = p.rate || '';
+  $('#f-interestRate').value = p.interestRate == null ? '' : p.interestRate;
   $('#f-desc').value = p.articleDesc || '';
   $('#f-gross').value = p.gross == null ? '' : p.gross;
   $('#f-less').value = p.less == null ? '' : p.less;
@@ -1193,6 +1305,7 @@ async function saveForm() {
     customerPhoto: formState.customerPhoto || null,
     principal: numOrEmpty($('#f-principal').value),
     rate: $('#f-rate').value.trim(),
+    interestRate: numOrEmpty($('#f-interestRate').value),
     articleDesc: $('#f-desc').value.trim(),
     gross: numOrEmpty($('#f-gross').value),
     less: numOrEmpty($('#f-less').value),
@@ -1359,6 +1472,45 @@ async function doDelete() {
   nav('home');
 }
 
+/* ---------------- interest / dues view ---------------- */
+function showDues() {
+  const p = currentViewPledge;
+  if (!p) return;
+  const body = $('#duesBody');
+  const rate = pledgeRate(p);
+  const principal = Number(p.principal) || 0;
+  if (!principal || rate == null) {
+    body.innerHTML = '<p class="storage-line">Add the loan amount and an interest rate to this pledge (tap Edit) to see the interest and dues.</p>';
+    $('#duesModal').classList.add('show');
+    return;
+  }
+  const redeemed = !!(p.status === 'redeemed' && p.redemptionDetails && p.redemptionDetails.redeemedDate);
+  const asOf = redeemed ? p.redemptionDetails.redeemedDate : todayISO();
+  const now = computeDues(p, asOf);
+  const matObj = maturityDateObj(p.date);
+  let matISO = null;
+  if (matObj) matISO = matObj.getFullYear() + '-' + String(matObj.getMonth() + 1).padStart(2, '0') + '-' + String(matObj.getDate()).padStart(2, '0');
+  const atMat = matISO ? computeDues(p, matISO) : null;
+  const overdue = matObj ? daysUntilDate(matObj) : null;
+  let html = '';
+  html += '<div class="dues-row"><span>Principal</span><b>&#8377;' + formatINR(now.principal) + '</b></div>';
+  html += '<div class="dues-row"><span>Interest rate</span><b>&#8377;' + now.rate + ' per &#8377;100 / month</b></div>';
+  html += '<div class="dues-sec">As of ' + (redeemed ? 'redemption' : 'today') + ' &middot; ' + escapeHTML(fmtDate(asOf)) + '</div>';
+  html += '<div class="dues-row"><span>Interest (' + now.days + ' day' + (now.days === 1 ? '' : 's') + ')</span><b>&#8377;' + formatINR(now.interest) + '</b></div>';
+  html += '<div class="dues-row total"><span>Total payable</span><b>&#8377;' + formatINR(now.total) + '</b></div>';
+  if (atMat) {
+    html += '<div class="dues-sec">At maturity &middot; ' + escapeHTML(addMonthsISO(p.date, 6)) + '</div>';
+    html += '<div class="dues-row"><span>Interest (' + atMat.days + ' days)</span><b>&#8377;' + formatINR(atMat.interest) + '</b></div>';
+    html += '<div class="dues-row total"><span>Total at maturity</span><b>&#8377;' + formatINR(atMat.total) + '</b></div>';
+  }
+  if (!redeemed && overdue != null && overdue < 0) {
+    html += '<div class="dues-note">&#9888; Overdue by ' + (-overdue) + ' day' + (overdue === -1 ? '' : 's') + ' — interest keeps growing past maturity.</div>';
+  }
+  body.innerHTML = html;
+  $('#duesModal').classList.add('show');
+}
+function hideDues() { const m = $('#duesModal'); if (m) m.classList.remove('show'); }
+
 /* ---------------- SETTINGS ---------------- */
 async function showSettings() {
   showView('view-settings', 'Settings', true);
@@ -1435,7 +1587,10 @@ function wireHandlers() {
   $('#printBtn').onclick = doPrint;
   $('#editBtn').onclick = () => nav('edit-' + currentViewId);
   $('#redeemBtn').onclick = toggleRedeem;
+  $('#duesBtn').onclick = showDues;
   $('#deleteBtn').onclick = doDelete;
+  $('#duesCloseBtn').onclick = hideDues;
+  $('#duesModal').onclick = function (e) { if (e.target === $('#duesModal')) hideDues(); };
 
   $('#saveSettingsBtn').onclick = saveSettingsFromForm;
   $('#enableAlertsBtn').onclick = enableAlerts;

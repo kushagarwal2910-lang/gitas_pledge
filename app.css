@@ -172,6 +172,7 @@ input,textarea,select{font-family:inherit;font-size:16px;} /* 16px stops iOS/And
 .btn.edit{background:#fff;color:#444;border:1px solid var(--line);}
 .btn.redeem{background:#fff;color:var(--ok);border:1px solid var(--ok);}
 .btn.redeem.is-redeemed{background:#fff;color:#b06b00;border-color:#d8a23a;}
+.btn.dues{background:#fff;color:var(--fill);border:1px solid var(--fill);grid-column:1 / -1;}
 .btn.delete{background:#fff;color:var(--danger);border:1px solid #e3b4b8;grid-column:1 / -1;}
 .receipt-img-wrap{background:#dfe3ec;border-radius:12px;padding:12px;text-align:center;box-shadow:var(--shadow);}
 .receipt-img-wrap img{max-width:100%;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.18);}
@@ -215,6 +216,22 @@ input,textarea,select{font-family:inherit;font-size:16px;} /* 16px stops iOS/And
   display:inline-block;animation:sc-rot .7s linear infinite;
 }
 @keyframes sc-rot{to{transform:rotate(360deg);}}
+
+/* ---------- Modal (interest / dues) ---------- */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:70;padding:18px;}
+.modal.show{display:flex;}
+.modal-card{background:#fff;border-radius:14px;max-width:420px;width:100%;box-shadow:0 12px 40px rgba(0,0,0,.3);padding:16px 18px;max-height:85vh;overflow:auto;}
+.modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.modal-head span{font-weight:700;color:var(--accent);font-size:16px;}
+.modal-x{background:none;border:none;font-size:18px;color:var(--muted);cursor:pointer;line-height:1;padding:4px;}
+.dues-row{display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:8px 2px;border-bottom:1px solid var(--line);font-size:14px;}
+.dues-row span{color:var(--muted);}
+.dues-row b{color:var(--text);white-space:nowrap;}
+.dues-row.total{border-bottom:none;}
+.dues-row.total span{color:var(--text);font-weight:600;}
+.dues-row.total b{color:var(--accent);font-size:16px;}
+.dues-sec{margin:14px 0 2px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);font-weight:700;}
+.dues-note{margin-top:14px;font-size:13px;color:var(--danger);background:#fdecec;border-radius:8px;padding:9px 11px;}
 
 /* offscreen render stage */
 #renderStage{position:fixed;left:-99999px;top:0;}
