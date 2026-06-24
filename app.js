@@ -7,7 +7,7 @@ const GOOGLE_CLIENT_ID = '141909794238-2p26p5tbfhk9kdacm7ncdmeusra7dmu3.apps.goo
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const APP_FOLDER_NAME = 'Pledge Book - Backups';   // legacy folder — read once for migration
 const DATA_FILE_NAME = 'pledge-book-data.json';    // legacy monolithic file — migration source only
-const DATA_FOLDER_NAME = 'Pledge Book Data';       // new home: one small file per pledge
+const DATA_FOLDER_NAME = 'Geetha Pledge Book';     // new home: one small file per pledge
 // Google sign-in + Drive sync. Set false for a pure on-device build (no login).
 const CLOUD_ENABLED = true;
 
@@ -923,11 +923,21 @@ async function driveFindFile(name) {
 }
 async function ensureDataFolder() {
   if (driveDataFolderId) return driveDataFolderId;
-  const q = "mimeType='application/vnd.google-apps.folder' and name='" + qEsc(DATA_FOLDER_NAME) + "' and trashed=false";
-  const r = await driveFetch('drive/v3/files?spaces=drive&fields=' + encodeURIComponent('files(id,name)') + '&q=' + encodeURIComponent(q));
-  const j = await r.json();
-  if (j.files && j.files.length) driveDataFolderId = j.files[0].id;
-  else {
+  // Look for the current folder name; if only an older-named data folder exists, adopt and rename it
+  // (so a folder rename across deploys never splits the data or creates a duplicate).
+  const names = [DATA_FOLDER_NAME, 'Pledge Book Data'];
+  for (let i = 0; i < names.length && !driveDataFolderId; i++) {
+    const q = "mimeType='application/vnd.google-apps.folder' and name='" + qEsc(names[i]) + "' and trashed=false";
+    const r = await driveFetch('drive/v3/files?spaces=drive&fields=' + encodeURIComponent('files(id,name)') + '&q=' + encodeURIComponent(q));
+    const j = await r.json();
+    if (j.files && j.files.length) {
+      driveDataFolderId = j.files[0].id;
+      if (names[i] !== DATA_FOLDER_NAME) {
+        try { await driveFetch('drive/v3/files/' + driveDataFolderId + '?fields=id', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: DATA_FOLDER_NAME }) }); } catch (e) {}
+      }
+    }
+  }
+  if (!driveDataFolderId) {
     const cr = await driveFetch('drive/v3/files?fields=id', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: DATA_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }) });
     const cj = await cr.json(); driveDataFolderId = cj.id;
   }
