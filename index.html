@@ -209,6 +209,10 @@
       <button class="btn dues" id="duesBtn">&#128176; Interest / Dues</button>
       <button class="btn delete" id="deleteBtn">&#128465; Delete</button>
     </div>
+    <div class="receipt-photos" id="receiptPhotos" hidden>
+      <p>Tap a photo to zoom</p>
+      <div class="receipt-photo-list" id="receiptPhotoList"></div>
+    </div>
     <div class="receipt-img-wrap">
       <img id="receiptImg" alt="Receipt preview"/>
     </div>
@@ -365,6 +369,24 @@
     <div id="duesBody"></div>
   </div>
 </div>
+
+<!-- Saved-photo viewer; separate from the printed/shared receipt. -->
+<dialog class="photo-viewer" id="photoViewer" aria-labelledby="photoViewerTitle" aria-describedby="photoViewerHint">
+  <div class="photo-viewer-head">
+    <h2 id="photoViewerTitle">Photo</h2>
+    <button type="button" id="photoViewerClose" aria-label="Close photo viewer" autofocus>&#10005;</button>
+  </div>
+  <div class="photo-viewer-stage" id="photoViewerStage">
+    <img id="photoViewerImg" alt="" draggable="false"/>
+  </div>
+  <div class="photo-viewer-controls" role="group" aria-label="Photo zoom controls">
+    <button type="button" id="photoZoomOut" aria-label="Zoom out">&#8722;</button>
+    <output id="photoZoomLevel" aria-live="polite">100%</output>
+    <button type="button" id="photoZoomIn" aria-label="Zoom in">&#43;</button>
+    <button type="button" id="photoZoomReset">Fit</button>
+  </div>
+  <p id="photoViewerHint">Pinch or use + / − to zoom. Drag to move. Fit shows the whole photo.</p>
+</dialog>
 
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="./app.js"></script>

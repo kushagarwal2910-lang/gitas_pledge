@@ -188,7 +188,7 @@ async function dbPut(store, val) {
   return new Promise((res, rej) => {
     const t = db.transaction(store, 'readwrite');
     const rq = t.objectStore(store).put(val);
-    rq.onsuccess = () => res(rq.result);
+    t.oncomplete = () => res(rq.result);
     t.onerror = () => rej(t.error);
     t.onabort = () => rej(t.error);
   });
@@ -678,7 +678,6 @@ let gTokenClient = null, gAccessToken = null, gTokenExpiry = 0, driveFolderId = 
 let driveDataFolderId = (function () { try { return localStorage.getItem('ga_dataFolder') || null; } catch (e) { return null; } })();
 let driveFileMap = (function () { try { return JSON.parse(localStorage.getItem('ga_fileMap') || '{}') || {}; } catch (e) { return {}; } })();
 function saveFileMap() { try { localStorage.setItem('ga_fileMap', JSON.stringify(driveFileMap)); } catch (e) {} }
-function bumpLastPull(t) { if (t && (!lastPullAt || Date.parse(t) > Date.parse(lastPullAt))) { lastPullAt = t; try { localStorage.setItem('ga_lastPull', lastPullAt); } catch (e) {} } }
 function gisReady() { return !!(window.google && google.accounts && google.accounts.oauth2); }
 function whenGisReady(timeoutMs) {
   return new Promise(function (resolve) {
@@ -776,11 +775,13 @@ async function onSignedIn(user) {
     await dbClear('pledges');
     settings = Object.assign({}, DEFAULT_SETTINGS);
     await dbPut('settings', settings);
-    driveFolderId = null;
-    try { localStorage.removeItem('ga_driveFolder'); } catch (e) {}
+    driveFolderId = null; driveDataFolderId = null; driveFileMap = {};
+    lastPullAt = '1970-01-01T00:00:00Z';
+    try { ['ga_driveFolder', 'ga_dataFolder', 'ga_fileMap', 'ga_lastPull', 'ga_migratedV3', 'ga_migratedV4', 'ga_restoreV1'].forEach(key => localStorage.removeItem(key)); } catch (e) {}
   } else if (!prev) {
     // First sign-in on this device — keep pledges made before signing in, push them up.
-    if (!settings.updatedAt) touchSettings();
+    // A fresh device must adopt the shop settings on Drive instead of uploading defaults.
+    if (!settings.updatedAt && await dbGet('settings', 'app')) touchSettings();
   }
   try { localStorage.setItem('ga_userId', uid); } catch (e) {}
   try { driveFolderId = localStorage.getItem('ga_driveFolder') || null; } catch (e) {}
@@ -803,6 +804,16 @@ async function ensureSyncFields() {
 }
 function touchSettings() { settings.updatedAt = Date.now(); settings.pendingPush = true; }
 let syncTimer = null;
+let syncTask = Promise.resolve();
+let syncJobs = 0;
+function queueSync(work) {
+  syncJobs++; syncing = true;
+  const task = syncTask.catch(function () {}).then(async function () {
+    try { await work(); } finally { syncJobs--; syncing = syncJobs > 0; }
+  });
+  syncTask = task;
+  return task;
+}
 function syncAll() { if (syncTimer) clearTimeout(syncTimer); syncTimer = setTimeout(function () { _syncAll(); }, 350); }
 
 // The actual Drive round-trip: token -> data folder -> one-time migrate -> pull -> push. Throws on failure.
@@ -819,16 +830,13 @@ async function performSync() {
 // Silent background sync (no on-screen chip) — used on app focus, reconnect, settings save.
 async function _syncAll() {
   if (!CLOUD_ENABLED || !gUser || !navigator.onLine || syncing) return;
-  syncing = true;
   setSyncStatus('Saving to Google Drive…');
   try {
-    await performSync();
+    await queueSync(performSync);
     setSyncStatus('✅ Saved to Google Drive · ' + new Date().toLocaleTimeString());
     if ($('#view-home').classList.contains('active')) showHome();
   } catch (e) {
     reportSyncError(e);
-  } finally {
-    syncing = false;
   }
 }
 
@@ -840,18 +848,9 @@ async function syncNow() {
   showSyncChip('saving', 'Saving to Google Drive…');
   setSyncStatus('Saving to Google Drive…');
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
-  // Let any background sync already in flight finish first, then run ours.
-  let waited = 0;
-  while (syncing && waited < 10000) { await new Promise(function (r) { setTimeout(r, 150); }); waited += 150; }
-  syncing = true;
   try {
-    // Push-only: upload just the changed pledge's file → fast green ✓. Pulls happen in the background.
-    await whenGisReady(5000);
-    initGoogle();
-    await getAccessToken(false);
-    await ensureDataFolder();
-    await migrateOnce();
-    await pushDirty();
+    // Serialize saves with background restores and discover existing file IDs before uploading.
+    await queueSync(performSync);
     showSyncChip('saved', 'Saved to Google Drive');
     setSyncStatus('✅ Saved to Google Drive · ' + new Date().toLocaleTimeString());
   } catch (e) {
@@ -862,8 +861,6 @@ async function syncNow() {
       showSyncChip('error', 'Saved on device — will retry');
     }
     reportSyncError(e);
-  } finally {
-    syncing = false;
   }
 }
 
@@ -898,6 +895,7 @@ async function driveFetch(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({ Authorization: 'Bearer ' + token }, opts.headers || {});
   const r = await fetch('https://www.googleapis.com/' + path, opts);
+  if (r.status === 401) { gAccessToken = null; gTokenExpiry = 0; }
   if (!r.ok) throw new Error('drive-' + r.status);
   return r;
 }
@@ -997,7 +995,7 @@ async function drivePutPledge(p) {
     if (id && /drive-404/.test(e.message || '')) { res = await driveUploadJSON(name, content, null, driveDataFolderId); }
     else { throw e; }
   }
-  driveFileMap[p.uid] = res.id; saveFileMap(); bumpLastPull(res.modifiedTime);
+  driveFileMap[p.uid] = res.id; saveFileMap();
 }
 async function drivePutSettings() {
   const id = driveFileMap['__settings__'] || null;
@@ -1007,7 +1005,7 @@ async function drivePutSettings() {
     if (id && /drive-404/.test(e.message || '')) { res = await driveUploadJSON('settings.json', JSON.stringify(settings), null, driveDataFolderId); }
     else { throw e; }
   }
-  driveFileMap['__settings__'] = res.id; saveFileMap(); bumpLastPull(res.modifiedTime);
+  driveFileMap['__settings__'] = res.id; saveFileMap();
 }
 // Push only the records that changed (one small file each) — fast regardless of how many pledges exist.
 // Resilient: a transient failure on one pledge is skipped (it stays pending for the next cycle) so a
@@ -1037,87 +1035,106 @@ async function pushDirty() {
     }
   }
   if (settings.pendingPush) {
-    try { await drivePutSettings(); settings.pendingPush = false; await persistSettings(true); }
+    const uploadedAt = settings.updatedAt;
+    try { await drivePutSettings(); if (settings.updatedAt === uploadedAt) settings.pendingPush = false; await persistSettings(true); }
     catch (e) { const m = (e && e.message) || ''; if (/google-not-ready|no-token|interaction|drive-401/.test(m)) throw e; failed++; if (!firstErr) firstErr = e; }
   }
   if (failed) throw (firstErr || new Error('partial-sync')); // surface so the leftovers get retried
 }
-// Download only files changed since the last pull and merge them into the local cache.
+// Reconcile every existing pledge once after this update; later pulls are incremental.
+// A failed download never advances the checkpoint, so the next sync can retry it.
 async function pullChanges() {
   if (!driveDataFolderId) return;
-  const since = lastPullAt || '1970-01-01T00:00:00Z';
+  let restored = false;
+  try { restored = localStorage.getItem('ga_restoreV1') === '1'; } catch (e) {}
+  const epoch = '1970-01-01T00:00:00Z';
+  const checkpoint = restored && isFinite(Date.parse(lastPullAt)) ? lastPullAt : epoch;
+  // Overlap one second to include files that share a timestamp at the previous boundary.
+  const since = new Date(Math.max(0, Date.parse(checkpoint) - 1000)).toISOString();
   const q = "'" + driveDataFolderId + "' in parents and trashed=false and modifiedTime > '" + since + "'";
-  let files;
-  try { files = await driveListAll(q); } catch (e) { return; }
+  const files = await driveListAll(q);
   const localAll = await dbAll('pledges');
   const byUid = {};
   localAll.forEach(function (p) { if (p.uid) byUid[p.uid] = p; });
+  let latest = checkpoint, firstError = null;
   for (const f of files) {
-    if (f.name === 'settings.json') {
-      driveFileMap['__settings__'] = f.id;
-      let rs; try { rs = await driveDownloadJSON(f.id); } catch (e) { rs = null; }
-      if (rs && (rs.updatedAt || 0) > (settings.updatedAt || 0) && !settings.pendingPush) {
-        settings = Object.assign({}, DEFAULT_SETTINGS, rs, { key: 'app' });
-        await dbPut('settings', settings); applySettingsToBar();
+    if (Date.parse(f.modifiedTime) > Date.parse(latest)) latest = f.modifiedTime;
+    try {
+      if (f.name === 'settings.json') {
+        driveFileMap['__settings__'] = f.id;
+        const rs = await driveDownloadJSON(f.id);
+        if (!rs || typeof rs !== 'object' || Array.isArray(rs)) throw new Error('invalid-settings-file');
+        if ((rs.updatedAt || 0) > (settings.updatedAt || 0) && !settings.pendingPush) {
+          settings = Object.assign({}, DEFAULT_SETTINGS, rs, { key: 'app', pendingPush: false });
+          await dbPut('settings', settings); applySettingsToBar();
+        }
+        continue;
       }
-      bumpLastPull(f.modifiedTime); continue;
-    }
-    if (f.name.indexOf('pledge-') !== 0) { bumpLastPull(f.modifiedTime); continue; }
-    let r; try { r = await driveDownloadJSON(f.id); } catch (e) { r = null; }
-    if (r && r.uid) {
+      if (!/^pledge-.+\.json$/.test(f.name)) continue;
+      const r = await driveDownloadJSON(f.id);
+      if (!r || !r.uid) throw new Error('invalid-pledge-file');
       driveFileMap[r.uid] = f.id;
-      const local = byUid[r.uid];
+      // An edit may have been saved while this file was downloading.
+      const local = byUid[r.uid] ? await dbGet('pledges', byUid[r.uid].id) : null;
       if (!local) {
         if (!r.deleted) { const obj = Object.assign({}, r); delete obj.id; obj.pendingPush = false; const nid = await dbPut('pledges', obj); obj.id = nid; byUid[r.uid] = obj; }
-      } else if ((r.updatedAt || 0) > (local.updatedAt || 0)) {
+      } else if (!local.pendingPush && (r.updatedAt || 0) > (local.updatedAt || 0)) {
         if (r.deleted) { await dbDel('pledges', local.id); delete byUid[r.uid]; }
         else { const obj = Object.assign({}, r); obj.id = local.id; obj.pendingPush = false; await dbPut('pledges', obj); byUid[r.uid] = obj; }
       }
-    }
-    bumpLastPull(f.modifiedTime);
+    } catch (e) { if (!firstError) firstError = e; }
   }
   saveFileMap();
   if ($('#view-home').classList.contains('active')) showHome();
+  if (firstError) throw firstError;
+  lastPullAt = latest;
+  try { localStorage.setItem('ga_lastPull', latest); localStorage.setItem('ga_restoreV1', '1'); } catch (e) {}
 }
 // One-time move from the old single-file model to per-pledge files in the new folder.
 async function migrateOnce() {
   let migrated = false;
-  try { migrated = localStorage.getItem('ga_migratedV3') === '1'; } catch (e) {}
+  try { migrated = localStorage.getItem('ga_migratedV4') === '1'; } catch (e) {}
   if (migrated) return;
-  // If the new folder already holds pledge files, adopt their ids and finish.
-  let existing = [];
-  try { existing = await driveListAll("'" + driveDataFolderId + "' in parents and trashed=false and name contains 'pledge-'"); } catch (e) {}
-  if (existing && existing.length) {
-    existing.forEach(function (f) { const m = /^pledge-(.+)\.json$/.exec(f.name || ''); if (m) driveFileMap[m[1]] = f.id; });
-    saveFileMap();
-    try { localStorage.setItem('ga_migratedV3', '1'); } catch (e) {}
-    return;
-  }
-  // Otherwise seed the new folder. Prefer the local cache; if empty, import the legacy monolithic file.
+  // Adopt current files first. They take precedence over older monolithic backups,
+  // including deletion records, so importing a backup cannot resurrect deleted pledges.
+  const existing = await driveListAll("'" + driveDataFolderId + "' in parents and trashed=false and name contains 'pledge-'");
+  existing.forEach(function (f) { const m = /^pledge-(.+)\.json$/.exec(f.name || ''); if (m) driveFileMap[m[1]] = f.id; });
+  const currentSettingsFile = await driveFindInFolder(driveDataFolderId, 'settings.json');
+  if (currentSettingsFile) driveFileMap['__settings__'] = currentSettingsFile.id;
+  saveFileMap();
   let localAll = await dbAll('pledges');
-  if (!localAll.length) {
-    try {
-      // Recover from whichever legacy backup folder this account used.
-      const legacyFolders = ['Geetha Agarwal Money Lenders - Backups', APP_FOLDER_NAME];
-      for (const fn of legacyFolders) {
-        const folder = await driveFindFolderByName(fn);
-        if (!folder) continue;
-        const f = await driveFindInFolder(folder.id, DATA_FILE_NAME);
-        if (!f) continue;
-        const remote = await driveDownloadJSON(f.id);
-        if (remote && Array.isArray(remote.pledges)) {
-          for (const rp of remote.pledges) { const obj = Object.assign({}, rp); delete obj.id; obj.pendingPush = true; await dbPut('pledges', obj); }
-          if (remote.settings) { settings = Object.assign({}, DEFAULT_SETTINGS, remote.settings, { key: 'app' }); settings.pendingPush = true; }
-        }
-        break;
-      }
-    } catch (e) {}
-    localAll = await dbAll('pledges');
+  const byUid = new Map(localAll.filter(p => p.uid).map(p => [p.uid, p]));
+  const legacyFolders = ['Geetha Agarwal Money Lenders - Backups', APP_FOLDER_NAME];
+  for (const name of legacyFolders) {
+    const folder = await driveFindFolderByName(name);
+    if (!folder) continue;
+    const file = await driveFindInFolder(folder.id, DATA_FILE_NAME);
+    if (!file) continue;
+    const remote = await driveDownloadJSON(file.id);
+    if (!remote || !Array.isArray(remote.pledges)) throw new Error('invalid-legacy-backup');
+    for (let i = 0; i < remote.pledges.length; i++) {
+      const rp = remote.pledges[i];
+      if (!rp || typeof rp !== 'object') throw new Error('invalid-legacy-pledge');
+      const uid = rp.uid || ('legacy-' + file.id + '-' + (rp.id == null ? i : rp.id));
+      if (driveFileMap[uid]) continue;
+      // Preserve a matching local copy of an early backup that predates sync IDs.
+      const local = byUid.get(uid) || (!rp.uid && localAll.find(p => p.id === rp.id && p.pledgeNo === rp.pledgeNo && p.date === rp.date && p.pawnerName === rp.pawnerName));
+      if (local && (local.pendingPush || (local.updatedAt || 0) >= (rp.updatedAt || 0))) continue;
+      const obj = Object.assign({}, rp, { uid: local ? local.uid : uid, pendingPush: true });
+      if (local) obj.id = local.id; else delete obj.id;
+      obj.id = await dbPut('pledges', obj);
+      byUid.set(obj.uid, obj);
+    }
+    if (!currentSettingsFile && remote.settings && !settings.pendingPush && (remote.settings.updatedAt || 0) >= (settings.updatedAt || 0)) {
+      settings = Object.assign({}, DEFAULT_SETTINGS, remote.settings, { key: 'app', pendingPush: true });
+      await persistSettings(true);
+    }
   }
-  for (const p of localAll) { if (!p.pendingPush) { p.pendingPush = true; await dbPut('pledges', p); } }
-  settings.pendingPush = true;
+  await ensureSyncFields();
+  localAll = await dbAll('pledges');
+  for (const p of localAll) { if (!driveFileMap[p.uid] && !p.pendingPush) { p.pendingPush = true; await dbPut('pledges', p); } }
   await persistSettings(true);
-  try { localStorage.setItem('ga_migratedV3', '1'); } catch (e) {}
+  try { localStorage.setItem('ga_migratedV4', '1'); } catch (e) {}
 }
 /* ---------------- navigation ---------------- */
 function nav(hash) { location.hash = hash; }
@@ -1437,6 +1454,146 @@ async function saveRedemptionForm() {
   navReplace('view-' + p.id);
 }
 
+/* ---------------- saved-photo viewer ---------------- */
+function renderReceiptPhotos(p) {
+  const list = $('#receiptPhotoList');
+  list.replaceChildren();
+  [[p.customerPhoto, 'Customer photo'], [p.articlePhoto, 'Ornament / item photo']].forEach(function (photo) {
+    if (!photo[0]) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'receipt-photo-button';
+    button.setAttribute('aria-label', 'Zoom ' + photo[1].toLowerCase());
+    button.setAttribute('aria-haspopup', 'dialog');
+    const img = document.createElement('img');
+    img.src = photo[0];
+    img.alt = '';
+    button.append(img, document.createTextNode(photo[1]));
+    button.onclick = () => openPhotoViewer(photo[0], photo[1], button);
+    list.appendChild(button);
+  });
+  $('#receiptPhotos').hidden = !list.childElementCount;
+}
+
+const photoZoom = { scale: 1, x: 0, y: 0, width: 0, height: 0, pointers: new Map(), trigger: null };
+function paintPhotoZoom() {
+  const stage = $('#photoViewerStage');
+  const focused = document.activeElement;
+  const maxX = Math.max(0, (photoZoom.width * photoZoom.scale - stage.clientWidth) / 2);
+  const maxY = Math.max(0, (photoZoom.height * photoZoom.scale - stage.clientHeight) / 2);
+  photoZoom.x = Math.max(-maxX, Math.min(maxX, photoZoom.x));
+  photoZoom.y = Math.max(-maxY, Math.min(maxY, photoZoom.y));
+  $('#photoViewerImg').style.transform = 'translate(-50%, -50%) translate(' + photoZoom.x + 'px,' + photoZoom.y + 'px) scale(' + photoZoom.scale + ')';
+  $('#photoZoomLevel').textContent = Math.round(photoZoom.scale * 100) + '%';
+  $('#photoZoomOut').disabled = !photoZoom.width || photoZoom.scale <= 1;
+  $('#photoZoomIn').disabled = !photoZoom.width || photoZoom.scale >= 6;
+  $('#photoZoomReset').disabled = !photoZoom.width;
+  // Keep keyboard focus inside the viewer when a zoom-limit button becomes disabled.
+  if ((focused === $('#photoZoomOut') || focused === $('#photoZoomIn')) && focused.disabled && photoZoom.width) {
+    $('#photoZoomReset').focus({ preventScroll: true });
+  }
+}
+function fitPhotoZoom() {
+  const img = $('#photoViewerImg'), stage = $('#photoViewerStage');
+  if (!$('#photoViewer').open || !img.naturalWidth) return;
+  const fit = Math.min((stage.clientWidth - 24) / img.naturalWidth, (stage.clientHeight - 24) / img.naturalHeight, 1);
+  photoZoom.width = img.naturalWidth * fit;
+  photoZoom.height = img.naturalHeight * fit;
+  photoZoom.scale = 1; photoZoom.x = 0; photoZoom.y = 0;
+  img.style.width = photoZoom.width + 'px';
+  img.style.height = photoZoom.height + 'px';
+  img.style.visibility = 'visible';
+  paintPhotoZoom();
+}
+// Anchor zoom to the pointer/pinch midpoint so the inspected detail stays in place.
+function changePhotoZoom(scale, from, to) {
+  if (!photoZoom.width) return;
+  const next = Math.max(1, Math.min(6, scale));
+  const ratio = next / photoZoom.scale;
+  from = from || { x: 0, y: 0 }; to = to || from;
+  photoZoom.x = to.x - (from.x - photoZoom.x) * ratio;
+  photoZoom.y = to.y - (from.y - photoZoom.y) * ratio;
+  photoZoom.scale = next;
+  paintPhotoZoom();
+}
+function openPhotoViewer(src, title, trigger) {
+  const dialog = $('#photoViewer'), img = $('#photoViewerImg');
+  photoZoom.trigger = trigger;
+  photoZoom.pointers.clear();
+  photoZoom.width = 0; photoZoom.height = 0;
+  photoZoom.scale = 1; photoZoom.x = 0; photoZoom.y = 0;
+  $('#photoViewerTitle').textContent = title;
+  img.alt = title;
+  img.style.visibility = 'hidden';
+  document.body.classList.add('photo-viewer-open');
+  dialog.showModal();
+  paintPhotoZoom();
+  img.src = src;
+}
+function closePhotoViewer() {
+  const dialog = $('#photoViewer');
+  if (dialog.open) dialog.close();
+}
+function initPhotoViewer() {
+  const dialog = $('#photoViewer'), stage = $('#photoViewerStage'), img = $('#photoViewerImg');
+  img.onload = fitPhotoZoom;
+  img.onerror = function () { if (dialog.open) { closePhotoViewer(); toast('Could not load that photo'); } };
+  $('#photoViewerClose').onclick = closePhotoViewer;
+  $('#photoZoomIn').onclick = () => changePhotoZoom(photoZoom.scale * 1.4);
+  $('#photoZoomOut').onclick = () => changePhotoZoom(photoZoom.scale / 1.4);
+  $('#photoZoomReset').onclick = fitPhotoZoom;
+  dialog.addEventListener('close', function () {
+    document.body.classList.remove('photo-viewer-open');
+    photoZoom.pointers.clear();
+    photoZoom.width = 0;
+    img.removeAttribute('src');
+    if (photoZoom.trigger && photoZoom.trigger.isConnected) photoZoom.trigger.focus({ preventScroll: true });
+    photoZoom.trigger = null;
+  });
+  dialog.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); changePhotoZoom(photoZoom.scale * 1.4); }
+    else if (e.key === '-') { e.preventDefault(); changePhotoZoom(photoZoom.scale / 1.4); }
+    else if (e.key === '0') { e.preventDefault(); fitPhotoZoom(); }
+  });
+  function point(e) {
+    const r = stage.getBoundingClientRect();
+    return { x: e.clientX - r.left - r.width / 2, y: e.clientY - r.top - r.height / 2 };
+  }
+  function gesture() {
+    const pts = Array.from(photoZoom.pointers.values());
+    if (pts.length < 2) return { center: pts[0], distance: 0 };
+    return {
+      center: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 },
+      distance: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+    };
+  }
+  stage.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0 || !photoZoom.width) return;
+    photoZoom.pointers.set(e.pointerId, point(e));
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener('pointermove', function (e) {
+    if (!photoZoom.pointers.has(e.pointerId)) return;
+    const before = gesture();
+    photoZoom.pointers.set(e.pointerId, point(e));
+    const after = gesture();
+    const ratio = before.distance > 0 ? after.distance / before.distance : 1;
+    changePhotoZoom(photoZoom.scale * ratio, before.center, after.center);
+  });
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (event) {
+    stage.addEventListener(event, e => photoZoom.pointers.delete(e.pointerId));
+  });
+  stage.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? stage.clientHeight : 1;
+    changePhotoZoom(photoZoom.scale * Math.exp(-e.deltaY * unit * 0.002), point(e));
+  }, { passive: false });
+  window.addEventListener('resize', fitPhotoZoom);
+  window.addEventListener('hashchange', closePhotoViewer);
+  window.addEventListener('beforeprint', closePhotoViewer);
+}
+
 /* ---------------- RECEIPT VIEW ---------------- */
 function setRedeemBtn(p) {
   const rb = $('#redeemBtn');
@@ -1451,6 +1608,7 @@ async function showReceipt(id) {
   currentViewId = id; currentViewPledge = p; currentBlob = null;
   showView('view-receipt', 'Pledge #' + (p.pledgeNo || ''), true);
   setRedeemBtn(p);
+  renderReceiptPhotos(p);
   $('#receiptImg').removeAttribute('src');
   try {
     const blob = (p.status === 'redeemed' && p.redemptionDetails)
@@ -1794,6 +1952,21 @@ function route() {
 
 function registerSW() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    const wasControlled = !!navigator.serviceWorker.controller;
+    let updateCheck = null;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!wasControlled) return;
+      clearInterval(updateCheck);
+      function applyUpdate() {
+        // Never discard an unfinished pledge, redemption or settings form, or interrupt a save.
+        if (syncing || document.visibilityState === 'hidden') return;
+        if (['view-form', 'view-redeem', 'view-settings'].some(id => $('#' + id).classList.contains('active'))) return;
+        clearInterval(updateCheck);
+        location.reload();
+      }
+      updateCheck = setInterval(applyUpdate, 1000);
+      applyUpdate();
+    });
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 }
@@ -1810,6 +1983,7 @@ async function init() {
   try { if (navigator.storage && navigator.storage.persist) { navigator.storage.persist(); } } catch (e) {}
   try { settings = await loadSettings(); } catch (e) { settings = Object.assign({}, DEFAULT_SETTINGS); }
   wireHandlers();
+  initPhotoViewer();
   wireAuthHandlers();
   window.addEventListener('hashchange', route);
   window.addEventListener('online', function () { syncAll(); });
